@@ -1,3 +1,4 @@
+import os
 import json
 from io import BytesIO
 from urllib.parse import urlparse
@@ -7,6 +8,7 @@ from discord import Intents
 from PIL import Image
 import requests
 
+from dotenv import load_dotenv
 
 
 class MyBot(discord.Client):
@@ -83,4 +85,7 @@ def trim_url_to_extension(url):
     return trimmed_url
 
 bot = MyBot()
-bot.run('MTEyNTkwNTkyMzkzNjg5OTExMw.GnZc50.Z6wYlRTuT_FKM77H83Ix_-x2o06Fp5TkpxAoKY')
+
+load_dotenv()
+token = os.environ.get('token')
+bot.run(token)
