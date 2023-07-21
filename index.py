@@ -75,7 +75,11 @@ class MyBot(discord.Client):
                 metaData += f"model: {'Unable to check metadata for requested image, verify it exist.'}\n"
                 
             # Send the data as a message
-            await message.channel.send(f"Metadata for {imageUrl}:\n{metaData}")
+            if (len(metaData) >= 1800):
+                await message.channel.send(f"Metadata for {imageUrl}:\n{metaData[:1800]}")
+                await message.channel.send(f"{metaData[1800:]}")
+            else:
+                await message.channel.send(f"Metadata for {imageUrl}:\n{metaData}")
 
 def trim_url_to_extension(url):
     parsed_url = urlparse(url)
