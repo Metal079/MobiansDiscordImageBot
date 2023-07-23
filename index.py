@@ -2,6 +2,9 @@ import os
 import json
 from io import BytesIO
 from urllib.parse import urlparse
+from datetime import datetime, timedelta
+import random
+import string
 
 import discord
 from discord import Intents
@@ -9,7 +12,14 @@ from PIL import Image
 import requests
 
 from dotenv import load_dotenv
+import pyodbc
 
+DBHOST = os.environ.get('DBHOST')
+DBNAME = os.environ.get('DBNAME')
+DBUSER = os.environ.get('DBUSER')
+DBPASS = os.environ.get('DBPASS')
+driver= '{ODBC Driver 17 for SQL Server}'
+cnxn = pyodbc.connect('DRIVER='+driver+';SERVER='+DBHOST+';PORT=1433;DATABASE='+DBNAME+';UID='+DBUSER+';PWD='+ DBPASS)
 
 class MyBot(discord.Client):
     def __init__(self, *args, **kwargs):
@@ -81,12 +91,74 @@ class MyBot(discord.Client):
             else:
                 await message.channel.send(f"Metadata for {imageUrl}:\n{metaData}")
 
+        elif message.content.lower().startswith('!fastpass'):
+            args = message.content.split(" ")
+            if len(args) < 3:  # Check if a duration and a user are specified
+                await message.channel.send('Please specify the duration for the fastpass and mention a user, e.g. !fastpass 1week @username')
+                return
+
+            duration = args[1].lower().strip()
+            if duration == '1week':
+                expiration_date = datetime.now() + timedelta(weeks=1)
+            elif duration == '1day':
+                expiration_date = datetime.now() + timedelta(days=1)
+            else:
+                await message.channel.send(f'Unsupported duration: {duration}')
+                return
+
+            # Generate a new fastpass code
+            fastpass_code = generate_fastpass_code()
+
+            # Store the new fastpass code in a database or shared location
+            store_fastpass_code(fastpass_code, datetime.now(), expiration_date, str(message.author))
+
+            # Check if a user was mentioned
+            # Check if a user was mentioned
+            if len(message.mentions) > 0:
+                # Send a DM to the first mentioned user
+                user = message.mentions[0]
+                try:
+                    await user.send(
+                        f'Your new fastpass code is {fastpass_code}.\n'
+                        f'Your pass will expire on {expiration_date}.\n'
+                        f'Thank you for being an active member of the community!\n'
+                        f'We hope to see you again in future server events!.'
+                    )
+                except discord.Forbidden:
+                    await message.channel.send(f"I don't have permission to DM {user.name}.")
+                except discord.HTTPException as e:
+                    await message.channel.send(f'An error occurred while trying to DM {user.name}: {e}')
+            else:
+                # If no user was mentioned, send the message in the channel as usual
+                await message.channel.send(f'Your new fastpass code is {fastpass_code}')
+
 def trim_url_to_extension(url):
     parsed_url = urlparse(url)
     file_name_with_extension = parsed_url.path.split('/')[-1]
     file_name, extension = file_name_with_extension.rsplit('.', 1)
     trimmed_url = url[:url.index(extension)+len(extension)]
     return trimmed_url
+
+def generate_fastpass_code():
+    words = []
+    for _ in range(4):  # Generate four words
+        word_length = random.randint(2, 3)  # Each word has 2-3 characters
+        word = ''.join(random.choice(string.ascii_lowercase) for _ in range(word_length))  # Randomly choose characters
+        words.append(word)
+    return '-'.join(words)  # Combine words with '-'
+
+def store_fastpass_code(fastpass_code, creation_date, expiration_date, created_by):
+    global cnxn  # Declare cnxn as a global variable
+    cursor = cnxn.cursor()
+
+    cursor.execute("""
+        INSERT INTO FastPass 
+        (FastPassCode, CreationDate, ExpirationDate, CreatedBy) 
+        VALUES (?, ?, ?, ?)
+    """, fastpass_code, creation_date, expiration_date, created_by)
+
+    cnxn.commit()
+
 
 bot = MyBot()
 
