@@ -33,12 +33,20 @@ class MyBot(discord.Client):
             return
 
         if message.content.lower().startswith('!getinfo'):
-            args = message.content.split(" ")
-            if len(args) < 2:
+            imageUrl = ""
+            # Case 1: URL immediately after the command
+            if len(message.content) > len('!getinfo'):
+                imageUrl = message.content[len('!getinfo'):].strip()
+            else:
+                # Case 2: URL in a new line
+                args = message.content.split("\n")
+                if len(args) > 1:
+                    imageUrl = args[1].strip()
+            
+            if not imageUrl:
                 await message.channel.send('Please provide an image URL')
                 return
 
-            imageUrl = args[1]
             imageUrl = trim_url_to_extension(imageUrl)
             
             # Retrieve the image data
@@ -82,7 +90,7 @@ class MyBot(discord.Client):
                 metaData += f"Cfg: {info['guidance_scale']}\n"
                 metaData += f"model: {info['use_stable_diffusion_model'].split('stable-diffusion')[-1]}\n"
             else:
-                metaData += f"model: {'Unable to check metadata for requested image, verify it exist.'}\n"
+                metaData += f"model: {'Unable to check the metadata for the requested image. It may not have prompts embedded'}\n"
                 
             # Send the data as a message
             if (len(metaData) >= 1800):
@@ -92,45 +100,64 @@ class MyBot(discord.Client):
                 await message.channel.send(f"Metadata for {imageUrl}:\n{metaData}")
 
         elif message.content.lower().startswith('!fastpass'):
-            args = message.content.split(" ")
-            if len(args) < 3:  # Check if a duration and a user are specified
-                await message.channel.send('Please specify the duration for the fastpass and mention a user, e.g. !fastpass 1week @username')
-                return
+            # Check if the author has the "Moderator" role
+            if any(role.name == 'Mod' for role in message.author.roles):
+                args = message.content.split(" ")
+                if len(args) < 3:  # Check if a duration and a user are specified
+                    await message.channel.send('Please specify the duration for the fastpass and mention a user, e.g. !fastpass 1week @username')
+                    return
 
-            duration = args[1].lower().strip()
-            if duration == '1week':
-                expiration_date = datetime.now() + timedelta(weeks=1)
-            elif duration == '1day':
-                expiration_date = datetime.now() + timedelta(days=1)
+                duration = args[1].lower().strip()
+                if 'week' in duration:
+                    # Get timedelta from numbers immediately before the word 'week'
+                    try:
+                        duration = int(duration.replace('week', '').strip())
+                    except ValueError:
+                        duration = int(duration.replace('weeks', '').strip())
+                    expiration_date = datetime.now() + timedelta(weeks=duration)
+                elif 'day' in duration:
+                    try:
+                        duration = int(duration.replace('day', '').strip())
+                    except ValueError:
+                        duration = int(duration.replace('days', '').strip())
+                    expiration_date = datetime.now() + timedelta(days=duration)
+                elif 'month' in duration:
+                    try:
+                        duration = int(duration.replace('month', '').strip())
+                    except ValueError:
+                        duration = int(duration.replace('months', '').strip())
+                    expiration_date = datetime.now() + timedelta(months=duration)
+                else:
+                    await message.channel.send(f'Unsupported duration: {duration}')
+                    return
+
+                # Generate a new fastpass code
+                fastpass_code = generate_fastpass_code()
+
+                # Store the new fastpass code in a database or shared location
+                store_fastpass_code(fastpass_code, datetime.now(), expiration_date, str(message.author))
+
+                # Check if a user was mentioned
+                if len(message.mentions) > 0:
+                    # Send a DM to the first mentioned user
+                    user = message.mentions[0]
+                    try:
+                        await user.send(
+                            f'Your new fastpass code is {fastpass_code}.\n'
+                            f'Your pass will expire on {expiration_date}.\n'
+                            f'Thank you for being an active member of the community!\n'
+                            f'We hope to see you again in future server events!.'
+                        )
+                        await message.channel.send(f'Fastpass code has been sent to {user.name}')
+                    except discord.Forbidden:
+                        await message.channel.send(f"I don't have permission to DM {user.name}.")
+                    except discord.HTTPException as e:
+                        await message.channel.send(f'An error occurred while trying to DM {user.name}: {e}')
+                else:
+                    # If no user was mentioned, send the message in the channel as usual
+                    await message.channel.send(f'Your new fastpass code is {fastpass_code}')
             else:
-                await message.channel.send(f'Unsupported duration: {duration}')
-                return
-
-            # Generate a new fastpass code
-            fastpass_code = generate_fastpass_code()
-
-            # Store the new fastpass code in a database or shared location
-            store_fastpass_code(fastpass_code, datetime.now(), expiration_date, str(message.author))
-
-            # Check if a user was mentioned
-            # Check if a user was mentioned
-            if len(message.mentions) > 0:
-                # Send a DM to the first mentioned user
-                user = message.mentions[0]
-                try:
-                    await user.send(
-                        f'Your new fastpass code is {fastpass_code}.\n'
-                        f'Your pass will expire on {expiration_date}.\n'
-                        f'Thank you for being an active member of the community!\n'
-                        f'We hope to see you again in future server events!.'
-                    )
-                except discord.Forbidden:
-                    await message.channel.send(f"I don't have permission to DM {user.name}.")
-                except discord.HTTPException as e:
-                    await message.channel.send(f'An error occurred while trying to DM {user.name}: {e}')
-            else:
-                # If no user was mentioned, send the message in the channel as usual
-                await message.channel.send(f'Your new fastpass code is {fastpass_code}')
+                await message.channel.send('You do not have permission to use this command.')
 
 def trim_url_to_extension(url):
     parsed_url = urlparse(url)
