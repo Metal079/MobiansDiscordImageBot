@@ -238,6 +238,29 @@ class MyBot(discord.Client):
                 else:
                     await message.channel.send(f"The caption is too long (max 380 characters). Please try again {reply.author.mention}!")
 
+        elif message.content.lower().strip() == '!rank':
+            username = message.author.name
+            cursor = cnxn.cursor()
+
+            # Execute the query to get the user's rank and number of images tagged
+            cursor.execute("""
+                WITH RankedUsers AS (
+                    SELECT UserName, ImagesCaptioned, RANK() OVER (ORDER BY ImagesCaptioned DESC) AS Rank
+                    FROM [dbo].[Vw_UserCaptions]
+                )
+                SELECT UserName, ImagesCaptioned, Rank
+                FROM RankedUsers
+                WHERE UserName = ?
+            """, username)
+            
+            result = cursor.fetchone()
+            if result:
+                images_captioned = result.ImagesCaptioned
+                rank = result.Rank
+                await message.channel.send(f"{message.author.mention}, you have tagged {images_captioned} images and are ranked #{rank}!")
+            else:
+                await message.channel.send(f"{message.author.mention}, you have not tagged any images yet.")
+
 
 def trim_url_to_extension(url):
     parsed_url = urlparse(url)
