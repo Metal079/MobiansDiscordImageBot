@@ -205,38 +205,36 @@ class MyBot(discord.Client):
             embed.set_image(url=f"attachment://{image_name}")
             image_message = await message.channel.send(embed=embed, file=file)
 
-            cursor = cnxn.cursor()  # Define the cursor outside the loop
+            cursor = cnxn.cursor()  # Define the cursor
 
-            # Loop to keep asking for a tag until it meets the criteria
-            while True:
-                def check(reply):
-                    # Check if the reply is to the specific message containing the image
-                    return reply.reference and reply.reference.message_id == image_message.id
+            def check(reply):
+                # Check if the reply is to the specific message containing the image
+                return reply.reference and reply.reference.message_id == image_message.id
 
-                # Wait for the user's reply for tagging without a timeout
-                reply = await self.wait_for('message', check=check)
+            # Wait for the user's reply for tagging without a timeout
+            reply = await self.wait_for('message', check=check)
 
-                # Get the username of the person who is replying
-                username = reply.author.name
+            # Get the username of the person who is replying
+            username = reply.author.name
 
-                cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
-                already_tagged = cursor.fetchone()[0]
-                if already_tagged:
-                    await message.channel.send(f"You've already captioned this image, {reply.author.mention}!")
-                    continue
+            cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
+            already_tagged = cursor.fetchone()[0]
+            if already_tagged:
+                await message.channel.send(f"You've already captioned this image, {reply.author.mention}!")
+                return
 
-                tag = reply.content.strip()
+            tag = reply.content.strip()
 
-                # Validate the tag length
-                if len(tag) <= 380:
-                    # Update the database entry for the image with the tag
-                    self.update_image_tag(image_path, tag, username)
+            # Validate the tag length
+            if len(tag) <= 380:
+                # Update the database entry for the image with the tag
+                self.update_image_tag(image_path, tag, username)
 
-                    # Send the confirmation message
-                    await message.channel.send(f"Image caption confirmed, Thank you! {reply.author.mention}!")
-                    break # Exit the loop since the tag is valid
-                else:
-                    await message.channel.send(f"The caption is too long (max 380 characters). Please try again {reply.author.mention}!")
+                # Send the confirmation message
+                await message.channel.send(f"Image caption confirmed, Thank you! {reply.author.mention}!")
+            else:
+                await message.channel.send(f"The caption is too long (max 380 characters). Please try again {reply.author.mention}!")
+
 
         elif message.content.lower().strip() == '!rank':
             username = message.author.name
