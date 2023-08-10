@@ -189,8 +189,8 @@ class MyBot(discord.Client):
                 await message.channel.send('You do not have permission to use this command.')
 
         elif message.content.lower().strip() == '!caption' or message.content.lower().strip() == '!tag':
-            username = message.author.name
-            image_path = self.get_random_image_path(username)
+            caller_username = message.author.name
+            image_path = self.get_random_image_path(caller_username)
 
             if image_path is None:
                 await message.channel.send(f"You've captioned all available images, {message.author.mention}!")
@@ -201,59 +201,42 @@ class MyBot(discord.Client):
             image_name = os.path.basename(image_path)
             file = discord.File(BytesIO(img_data), filename=image_name)
 
-            embed = Embed(title="Reply to this message to caption it!")
+            embed = Embed(title=f"Reply to this message to caption it, {message.author.mention}!")
             embed.set_image(url=f"attachment://{image_name}")
             image_message = await message.channel.send(embed=embed, file=file)
 
+            cursor = cnxn.cursor()  # Define the cursor outside the loop
+
             # Loop to keep asking for a tag until it meets the criteria
             while True:
-                cursor = cnxn.cursor()  # Define the cursor outside the loop
+                def check(reply):
+                    # Check if the reply is to the specific message containing the image
+                    return reply.reference and reply.reference.message_id == image_message.id
 
-                # Loop to keep asking for a tag until it meets the criteria
-                while True:
-                    def check(reply):
-                        return reply.reference and reply.reference.message_id == image_message.id
+                # Wait for the user's reply for tagging without a timeout
+                reply = await self.wait_for('message', check=check)
 
-                    # Wait for the user's reply for tagging without a timeout
-                    reply = await self.wait_for('message', check=check)
+                # Get the username of the person who is replying
+                username = reply.author.name
 
-                    cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
-                    already_tagged = cursor.fetchone()[0]
-                    if already_tagged:
-                        await message.channel.send(f"You've already captioned this image, {message.author.mention}!")
-                        continue
+                cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
+                already_tagged = cursor.fetchone()[0]
+                if already_tagged:
+                    await message.channel.send(f"You've already captioned this image, {reply.author.mention}!")
+                    continue
 
-                    tag = reply.content.strip()
+                tag = reply.content.strip()
 
-                    # Validate the tag length
-                    if len(tag) <= 380:
-                        # Update the database entry for the image with the tag
-                        self.update_image_tag(image_path, tag, username)
+                # Validate the tag length
+                if len(tag) <= 380:
+                    # Update the database entry for the image with the tag
+                    self.update_image_tag(image_path, tag, username)
 
-                        # Send the confirmation message
-                        await message.channel.send(f"Image caption confirmed, Thank you! {message.author.mention}!")
-                        break # Exit the loop since the tag is valid
-                    else:
-                        await message.channel.send(f"The caption is too long (max 380 characters). Please try again {message.author.mention}!")
-
-        elif message.content.lower().strip() == '!rank':
-            username = message.author.name
-            cursor = cnxn.cursor()
-
-            # Execute the query to get the user's rank and number of images tagged
-            cursor.execute("""
-                SELECT UserName, ImagesCaptioned, RANK() OVER (ORDER BY ImagesCaptioned DESC) AS Rank
-                FROM [dbo].[Vw_UserCaptions]
-                WHERE UserName = ?
-            """, username)
-            
-            result = cursor.fetchone()
-            if result:
-                images_captioned = result.ImagesCaptioned
-                rank = result.Rank
-                await message.channel.send(f"{message.author.mention}, you have tagged {images_captioned} images and are ranked #{rank}!")
-            else:
-                await message.channel.send(f"{message.author.mention}, you have not tagged any images yet.")
+                    # Send the confirmation message
+                    await message.channel.send(f"Image caption confirmed, Thank you! {reply.author.mention}!")
+                    break # Exit the loop since the tag is valid
+                else:
+                    await message.channel.send(f"The caption is too long (max 380 characters). Please try again {reply.author.mention}!")
 
 
 def trim_url_to_extension(url):
