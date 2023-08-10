@@ -5,8 +5,11 @@ from urllib.parse import urlparse
 from datetime import datetime, timedelta
 import random
 import string
+import asyncio
 
 import discord
+from discord import Embed
+from discord.ext import commands
 from discord import Intents
 from PIL import Image
 import requests
@@ -27,6 +30,32 @@ class MyBot(discord.Client):
 
     async def on_ready(self):
         print(f'We have logged in as {self.user}')
+
+    def get_random_image_path(self, username):
+        images_folder = 'sfw'
+        cursor = cnxn.cursor()
+
+        # Get the images that the user has already tagged
+        cursor.execute("SELECT ImagePath FROM [Mobians].[dbo].[Captions] WHERE UserName = ?", username)
+        tagged_images = [row[0] for row in cursor.fetchall()]
+
+        # Get all images from the folder
+        all_images = [os.path.join(images_folder, f) for f in os.listdir(images_folder) if os.path.isfile(os.path.join(images_folder, f))]
+
+        # Exclude images that the user has already tagged
+        untagged_images = [image for image in all_images if image not in tagged_images]
+
+        return random.choice(untagged_images) if untagged_images else None
+
+    def update_image_tag(self, image_path, tag, username):
+        cursor = cnxn.cursor()
+        # Insert the caption, image path, and created date into the Captions table
+        cursor.execute("""
+            INSERT INTO [Mobians].[dbo].[Captions] (UserName, Caption, ImagePath, CreatedDate)
+            VALUES (?, ?, ?, GETDATE())
+        """, username, tag, image_path)
+
+        cnxn.commit()
 
     async def on_message(self, message):
         if message.author == self.user:
@@ -158,6 +187,74 @@ class MyBot(discord.Client):
                     await message.channel.send(f'Your new fastpass code is {fastpass_code}')
             else:
                 await message.channel.send('You do not have permission to use this command.')
+
+        elif message.content.lower().strip() == '!caption' or message.content.lower().strip() == '!tag':
+            username = message.author.name
+            image_path = self.get_random_image_path(username)
+
+            if image_path is None:
+                await message.channel.send(f"You've captioned all available images, {message.author.mention}!")
+                return
+
+            with open(image_path, 'rb') as img_file:
+                img_data = img_file.read()
+            image_name = os.path.basename(image_path)
+            file = discord.File(BytesIO(img_data), filename=image_name)
+
+            embed = Embed(title="Reply to this message to caption it!")
+            embed.set_image(url=f"attachment://{image_name}")
+            image_message = await message.channel.send(embed=embed, file=file)
+
+            # Loop to keep asking for a tag until it meets the criteria
+            while True:
+                cursor = cnxn.cursor()  # Define the cursor outside the loop
+
+                # Loop to keep asking for a tag until it meets the criteria
+                while True:
+                    def check(reply):
+                        return reply.reference and reply.reference.message_id == image_message.id
+
+                    # Wait for the user's reply for tagging without a timeout
+                    reply = await self.wait_for('message', check=check)
+
+                    cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
+                    already_tagged = cursor.fetchone()[0]
+                    if already_tagged:
+                        await message.channel.send(f"You've already captioned this image, {message.author.mention}!")
+                        continue
+
+                    tag = reply.content.strip()
+
+                    # Validate the tag length
+                    if len(tag) <= 380:
+                        # Update the database entry for the image with the tag
+                        self.update_image_tag(image_path, tag, username)
+
+                        # Send the confirmation message
+                        await message.channel.send(f"Image caption confirmed, Thank you! {message.author.mention}!")
+                        break # Exit the loop since the tag is valid
+                    else:
+                        await message.channel.send(f"The caption is too long (max 380 characters). Please try again {message.author.mention}!")
+
+        elif message.content.lower().strip() == '!rank':
+            username = message.author.name
+            cursor = cnxn.cursor()
+
+            # Execute the query to get the user's rank and number of images tagged
+            cursor.execute("""
+                SELECT UserName, ImagesCaptioned, RANK() OVER (ORDER BY ImagesCaptioned DESC) AS Rank
+                FROM [dbo].[Vw_UserCaptions]
+                WHERE UserName = ?
+            """, username)
+            
+            result = cursor.fetchone()
+            if result:
+                images_captioned = result.ImagesCaptioned
+                rank = result.Rank
+                await message.channel.send(f"{message.author.mention}, you have tagged {images_captioned} images and are ranked #{rank}!")
+            else:
+                await message.channel.send(f"{message.author.mention}, you have not tagged any images yet.")
+
 
 def trim_url_to_extension(url):
     parsed_url = urlparse(url)
