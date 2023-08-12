@@ -31,8 +31,7 @@ class MyBot(discord.Client):
     async def on_ready(self):
         print(f'We have logged in as {self.user}')
 
-    def get_random_image_path(self, username):
-        images_folder = 'sfw'
+    def get_random_image_path(self, username, images_folder):
         cursor = cnxn.cursor()
 
         # Get the images that the user has already tagged
@@ -190,7 +189,17 @@ class MyBot(discord.Client):
 
         elif message.content.lower().strip() == '!caption' or message.content.lower().strip() == '!tag':
             caller_username = message.author.name
-            image_path = self.get_random_image_path(caller_username)
+            
+            # Check the channel and determine the image directory accordingly
+            if message.channel.name == 'image-captioning':
+                folder = 'sfw'
+            elif message.channel.name == 'nsfw-image-captioning':
+                folder = 'nsfw'
+            else:
+                await message.channel.send(f"Invalid channel for this command, {message.author.mention}!")
+                return
+
+            image_path = self.get_random_image_path(caller_username, folder)
 
             if image_path is None:
                 await message.channel.send(f"You've captioned all available images, {message.author.mention}!")
@@ -211,29 +220,30 @@ class MyBot(discord.Client):
                 # Check if the reply is to the specific message containing the image
                 return reply.reference and reply.reference.message_id == image_message.id
 
-            # Wait for the user's reply for tagging without a timeout
-            reply = await self.wait_for('message', check=check)
+            while True:
+                # Wait for the user's reply for tagging without a timeout
+                reply = await self.wait_for('message', check=check)
 
-            # Get the username of the person who is replying
-            username = reply.author.name
+                # Get the username of the person who is replying
+                username = reply.author.name
 
-            cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
-            already_tagged = cursor.fetchone()[0]
-            if already_tagged:
-                await message.channel.send(f"You've already captioned this image, {reply.author.mention}!")
-                return
+                cursor.execute("SELECT COUNT(*) FROM [Mobians].[dbo].[Captions] WHERE UserName = ? AND ImagePath = ?", username, image_path)
+                already_tagged = cursor.fetchone()[0]
+                if already_tagged:
+                    await message.channel.send(f"You've already captioned this image, {reply.author.mention}!")
+                    return
 
-            tag = reply.content.strip()
+                tag = reply.content.strip()
 
-            # Validate the tag length
-            if len(tag) <= 380:
-                # Update the database entry for the image with the tag
-                self.update_image_tag(image_path, tag, username)
+                # Validate the tag length
+                if len(tag) <= 380:
+                    # Update the database entry for the image with the tag
+                    self.update_image_tag(image_path, tag, username)
 
-                # Send the confirmation message
-                await message.channel.send(f"Image caption confirmed, Thank you! {reply.author.mention}!")
-            else:
-                await message.channel.send(f"The caption is too long (max 380 characters). Please try again {reply.author.mention}!")
+                    # Send the confirmation message
+                    await message.channel.send(f"Image caption confirmed, Thank you! {reply.author.mention}!")
+                else:
+                    await message.channel.send(f"The caption is too long (max 380 characters). Please try again {reply.author.mention}!")
 
 
         elif message.content.lower().strip() == '!rank':
