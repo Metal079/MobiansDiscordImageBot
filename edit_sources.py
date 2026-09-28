@@ -133,11 +133,9 @@ async def send_edit_sources(ctx, session, dsn, url=None):
     if slash:
         await ctx.defer(ephemeral=True)
 
-    async def send_private(content, **kwargs):
+    async def send_reply(content, **kwargs):
         kwargs["allowed_mentions"] = discord.AllowedMentions.none()
-        if slash:
-            return await ctx.send(content, ephemeral=True, **kwargs)
-        return await ctx.author.send(content, **kwargs)
+        return await ctx.send(content, ephemeral=slash, **kwargs)
 
     try:
         attachments = getattr(ctx.message, "attachments", [])
@@ -156,30 +154,26 @@ async def send_edit_sources(ctx, session, dsn, url=None):
             heading += "\nPossible match by visual hash; please verify the images."
         if notes:
             heading += "\n" + "\n".join(notes)
-        await send_private(heading)
+        await send_reply(heading)
         # Send separately so three large inputs do not exceed a message upload limit.
         for label, raw, filename in files:
             with BytesIO(raw) as buffer:
                 file = discord.File(buffer, filename=filename, description=label)
                 try:
-                    await send_private(label, file=file)
+                    await send_reply(label, file=file)
                 finally:
                     file.close()
-        if not slash:
-            await ctx.send("Sent the edit-source lookup to your DMs.")
     except SourceLookupError as exc:
-        await _send_lookup_error(ctx, send_private, str(exc))
+        await _send_lookup_error(ctx, send_reply, str(exc))
     except (psycopg.Error, aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, Image.DecompressionBombError):
         logging.exception("Edit source lookup failed")
-        await _send_lookup_error(ctx, send_private, "I couldn't retrieve the edit sources right now. Try again or use the generation job ID.")
+        await _send_lookup_error(ctx, send_reply, "I couldn't retrieve the edit sources right now. Try again or use the generation job ID.")
     except discord.HTTPException:
-        await ctx.send("I couldn't deliver the source images privately. Enable DMs or try /getsources.", ephemeral=slash)
+        await ctx.send("I couldn't send the source images here. Check my channel permissions or try /getsources.", ephemeral=slash)
 
 
-async def _send_lookup_error(ctx, send_private, message):
+async def _send_lookup_error(ctx, send_reply, message):
     try:
-        await send_private(message)
-        if not ctx.interaction:
-            await ctx.send("Sent the edit-source lookup result to your DMs.")
+        await send_reply(message)
     except discord.HTTPException:
-        await ctx.send("I couldn't DM you. Enable DMs or try /getsources.", ephemeral=bool(ctx.interaction))
+        await ctx.send("I couldn't send the lookup result here. Check my channel permissions or try /getsources.", ephemeral=bool(ctx.interaction))

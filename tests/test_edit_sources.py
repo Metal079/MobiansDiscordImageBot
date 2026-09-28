@@ -141,20 +141,21 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
             message=SimpleNamespace(attachments=[SimpleNamespace(url="https://example.com/edit.png")] if attachment else []),
             author=SimpleNamespace(send=AsyncMock()))
 
-    async def test_prefix_sources_only_go_to_requesting_mod_dm(self):
+    async def test_prefix_sources_are_posted_in_the_invoking_channel(self):
         ctx = self.ctx()
         captured = []
         async def capture(content, **kwargs):
             if "file" in kwargs:
                 captured.append((content, kwargs["file"].filename, kwargs["file"].fp.read()))
-        ctx.author.send.side_effect = capture
+        ctx.send.side_effect = capture
         with patch.object(s, "download_edit_hash", AsyncMock(return_value=-123)), \
              patch.object(s, "lookup_edit_sources", AsyncMock(return_value={**result(), "reference_images": [image_data()]})):
             await s.send_edit_sources(ctx, "session", "dsn")
         self.assertEqual([r[0] for r in captured], ["Base image", "Reference 1"])
         self.assertTrue(all(r[2] for r in captured))
-        self.assertEqual(ctx.send.await_count, 1)
-        self.assertNotIn("file", ctx.send.call_args.kwargs)
+        self.assertEqual(ctx.send.await_count, 3)
+        self.assertTrue(all(not call.kwargs["ephemeral"] for call in ctx.send.call_args_list))
+        ctx.author.send.assert_not_awaited()
 
     async def test_slash_sources_are_all_ephemeral(self):
         ctx = self.ctx(slash=True)
@@ -173,21 +174,23 @@ class DeliveryTests(unittest.IsolatedAsyncioTestCase):
         download.assert_not_awaited()
         lookup.assert_awaited_once_with("dsn", image_hash=None, job_id=JOB_ID)
 
-    async def test_closed_dms_never_fall_back_to_posting_images_publicly(self):
+    async def test_closed_dms_do_not_affect_channel_delivery(self):
         ctx = self.ctx()
         ctx.author.send.side_effect = discord.Forbidden(SimpleNamespace(status=403, reason="Forbidden"), "DMs closed")
         with patch.object(s, "download_edit_hash", AsyncMock(return_value=-123)), \
              patch.object(s, "lookup_edit_sources", AsyncMock(return_value=result())):
             await s.send_edit_sources(ctx, "session", "dsn")
-        self.assertTrue(all("file" not in call.kwargs for call in ctx.send.call_args_list))
-        self.assertIn("privately", ctx.send.call_args.args[0])
+        self.assertTrue(any("file" in call.kwargs for call in ctx.send.call_args_list))
+        ctx.author.send.assert_not_awaited()
 
-    async def test_expired_sources_message_is_private(self):
+    async def test_prefix_expired_sources_message_is_posted_in_chat(self):
         ctx = self.ctx()
         with patch.object(s, "download_edit_hash", AsyncMock(return_value=-123)), \
              patch.object(s, "lookup_edit_sources", AsyncMock(side_effect=s.SourceLookupError("Sources expired"))):
             await s.send_edit_sources(ctx, "session", "dsn")
-        self.assertEqual(ctx.author.send.call_args.args[0], "Sources expired")
+        self.assertEqual(ctx.send.call_args.args[0], "Sources expired")
+        self.assertFalse(ctx.send.call_args.kwargs["ephemeral"])
+        ctx.author.send.assert_not_awaited()
 
 
 if __name__ == "__main__":
