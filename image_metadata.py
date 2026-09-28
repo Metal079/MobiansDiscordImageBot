@@ -29,10 +29,7 @@ def edit_metadata(info, provenance):
         "Edit Instruction": instruction,
         "Edit Model": provenance.get("model") or info.get("model", "N/A"),
         "Edit Seed": provenance.get("seed", info.get("seed", "N/A")),
-        "Edit CFG": provenance.get("guidance_scale", info.get("cfg", "N/A")),
     }
-    if provenance.get("steps") is not None:
-        metadata["Edit Steps"] = provenance["steps"]
     if provenance.get("width") and provenance.get("height"):
         metadata["Edit Dimensions"] = f"{provenance['width']} × {provenance['height']}"
     # History downloads can retain the source recipe alongside edit_provenance.
@@ -42,7 +39,6 @@ def edit_metadata(info, provenance):
                            ("Original CFG", "cfg"), ("Original LoRAs", "loras")):
             if info.get(key) is not None:
                 metadata[label] = info[key]
-    metadata["Note"] = "Recreating an edit also requires its source image and any reference images."
     return metadata
 
 

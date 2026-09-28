@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import logging
 from image_metadata import read_image_metadata, lookup_hash_metadata, metadata_embeds
+from edit_sources import MODERATION_GUILD_ID, send_edit_sources
 from generation_monitor import run_bot_monitor
 import os
 import json
@@ -264,6 +265,17 @@ async def get_info(ctx, url: str = None):
     except discord.HTTPException:
         logging.exception("Sending image metadata failed")
         await send("I couldn't send the image metadata. Please try again.")
+
+
+@client.hybrid_command(name="getsources", description="Mod only: view an edit's base image and references")
+@app_commands.guilds(discord.Object(id=MODERATION_GUILD_ID))
+@app_commands.describe(url="Edited image URL or generation job ID; attach an image when using !getsources")
+async def get_sources(ctx, url: str = None):
+    # A role named Mod on another server must not grant access to Mobians sources.
+    if not ctx.guild or ctx.guild.id != MODERATION_GUILD_ID or not _is_mod_or_admin(ctx.author):
+        await ctx.send("This command is only available to Mobians moderators.", ephemeral=bool(ctx.interaction))
+        return
+    await send_edit_sources(ctx, client.session, DSN, url)
 
 
 @client.hybrid_command(name="fastpass", description="Grant a fastpass to a user")
