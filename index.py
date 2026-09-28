@@ -1,9 +1,10 @@
 import asyncio
 import contextlib
+import logging
+from image_metadata import read_image_metadata, lookup_hash_metadata, metadata_embeds
 from generation_monitor import run_bot_monitor
 import os
 import json
-from io import BytesIO
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
 import random
@@ -13,8 +14,6 @@ import discord
 from discord.ext import commands
 from discord import app_commands, Attachment
 from PIL import Image
-import requests
-import imagehash
 
 # from dotenv import load_dotenv
 import psycopg
@@ -236,139 +235,35 @@ async def get_info(ctx, url: str = None):
             await ctx.send("Please provide an image URL or an attachment.")
             return
 
-    # Proceed to fetch and process the image using `image_url`
-    response = requests.get(image_url)
-    if response.status_code == 200:
-        image = Image.open(BytesIO(response.content))
-    else:
-        await ctx.send(
-            f"Failed to fetch the image. Status code: {response.status_code}"
-        )
-
-    # Get the metadata
-    info = image.info
-    metadata_dict = {}
-
-    # Depending on the metadata source, you may adjust the way you handle each case
-    if "Disclaimer" in info:  # Detect if the image is from mobians.ai
-        metadata_dict["Prompt"] = info.get("prompt", "N/A")
-        metadata_dict["Negative Prompt"] = info.get("negative_prompt", "N/A")
-        metadata_dict["Seed"] = info.get("seed", "N/A")
-        metadata_dict["Cfg"] = info.get("cfg", "N/A")
-        metadata_dict["Model"] = info.get('model')
-        metadata_dict["loras"] = info.get("loras", " ")
-    elif "request_id" in info:  # Detect if the image is from NeverSFW.gg
-        metadata_dict["Prompt"] = info.get("prompt", "N/A")
-        metadata_dict["Loras"] = info.get("loras", "N/A")
-        metadata_dict["Cfg"] = info.get("CFG", "N/A")
-        metadata_dict["Steps"] = info.get("steps", "N/A")
-        metadata_dict["Generation Type"] = info.get("model_type", "N/A")
-        metadata_dict["Generation Date"] = info.get("generation_date", "N/A")
-    elif "parameters-json" in info:  # Detect if the image is from comfy?
-        data = json.loads(info["parameters-json"])
-        metadata_dict["Prompt"] = data.get("PositivePrompt", "N/A")
-        metadata_dict["Negative Prompt"] = data.get("NegativePrompt", "N/A")
-        metadata_dict["Seed"] = data.get("Seed", "N/A")
-        metadata_dict["Cfg"] = data.get("CfgScale", "N/A")
-        metadata_dict["Model"] = data.get("ModelName", "N/A")
-    elif "parameters" in info:  # Detect if the image is from auto1111
-        params = info["parameters"].split("\n")
-        metadata_dict["Prompt"] = params[0]
-        metadata_dict["Negative Prompt"] = params[1]
-        try:
-            key, value = params[2].split(", ")
-        except:
-            try:
-                key, value = "Misc Info", params[2]
-            except IndexError:
-                key, value = "Misc Info", params[1]
-                # delete negative prompt metadata
-                metadata_dict.pop("Negative Prompt")
-                
-        metadata_dict[key] = value
-    elif "invokeai" in info:
-        data = json.loads(info["invokeai"])
-        for key, value in data.items():
-            metadata_dict[key] = value
-    elif "prompt" in info:  # Handling for different metadata structure
-        metadata_dict["Prompt"] = info.get("prompt", "N/A")
-        metadata_dict["Negative Prompt"] = info.get("negative_prompt", "N/A")
-        metadata_dict["Seed"] = info.get("seed", "N/A")
-        metadata_dict["Cfg"] = info.get("guidance_scale", "N/A")
-        metadata_dict["Model"] = info.get(
-            "use_stable_diffusion_model", "Unknown model"
-        ).split("stable-diffusion")[-1]
-    else:
-        metadata_dict["Model"] = (
-            "Unable to check the metadata for the requested image. It may not have prompts embedded. Please use https://exif.tools/ to confirm. Ask the Author for prompts if available"
-        )
-        metadata_dict["hash_notice"] = "Attempting to find image based on hash"
-        image_hash = str(imagehash.phash(image, hash_size=8))
-        image_hash = twos_complement(image_hash, 64)
-
-        print(f"Hash: {image_hash}")
-
-        try:
-            cutoff = 1  # maximum bits that could be different between the hashes.
-
-            # Fetch details of the most similar image
-            async with await psycopg.AsyncConnection.connect(DSN) as aconn:
-                async with aconn.cursor() as acur:
-                    await acur.execute(
-                        "SELECT * FROM hashes WHERE hash <@ (%s, %s)",
-                        (
-                            image_hash,
-                            cutoff,
-                        ),
-                    )
-                    result = await acur.fetchone()
-            if result:
-                metadata_dict["Prompt"] = result[2]
-                metadata_dict["Negative Prompt"] = result[3]
-                metadata_dict["Seed"] = result[4]
-                metadata_dict["Cfg"] = result[5]
-                metadata_dict["Model"] = result[6]
-                metadata_dict["CreateDate"] = result[7]
-                metadata_dict['loras'] = result[8]
-            else:
-                metadata_dict["error"] = (
-                    "Unable to find details for the most similar image based on hash"
-                )
-        except:
-            pass
-
-    # Now build the embed, send 2 if over 1024 characters
-    embed = discord.Embed(
-        title="Image Metadata",
-        description=f"Metadata for {image_url}",
-        color=0x00FF00,
-    )
-    for key, original_value in metadata_dict.items():
-        try:
-            value_length = len(original_value)
-        except TypeError:
-            value_length = len(
-                str(original_value)
-            )  # Convert to string if not a sequence
-
-        if value_length > 1000:
-            # Split after 1000 characters
-            values = [
-                original_value[i : i + 1000] for i in range(0, value_length, 1000)
-            ]
-            for i, val in enumerate(values):
-                if i == 0:
-                    embed.add_field(name=key, value=val, inline=False)
-                else:
-                    embed.add_field(name="\u200b", value=val, inline=False)
-        else:
-            embed.add_field(name=key, value=original_value, inline=False)
-
-    # Send the embed
+    # Hybrid slash commands receive a Context with an interaction attached.
+    if not isinstance(ctx, discord.Interaction) and getattr(ctx, "interaction", None):
+        await ctx.defer()
+    send = ctx.followup.send if isinstance(ctx, discord.Interaction) else ctx.send
     try:
-        await ctx.send(embed=embed)
-    except discord.HTTPException as e:
-        await ctx.send(f"An error occurred while sending the embed: {e}")
+        async with client.session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            if response.status != 200:
+                await send(f"Failed to fetch the image. Status code: {response.status}")
+                return
+            raw = await response.read()
+        metadata, image_hash = await asyncio.to_thread(read_image_metadata, raw)
+    except (aiohttp.ClientError, asyncio.TimeoutError, OSError, ValueError, Image.DecompressionBombError):
+        await send("I couldn't read that image. Please upload the original PNG or provide a working image URL.")
+        return
+
+    if metadata is None:
+        try:
+            metadata = await lookup_hash_metadata(image_hash, DSN)
+        except (psycopg.Error, OSError, asyncio.TimeoutError):
+            logging.exception("Image metadata database lookup failed")
+            await send("The image has no embedded prompts, and the database lookup is temporarily unavailable. Please try again or upload the original PNG.")
+            return
+
+    try:
+        for embed in metadata_embeds(metadata, image_url):
+            await send(embed=embed)
+    except discord.HTTPException:
+        logging.exception("Sending image metadata failed")
+        await send("I couldn't send the image metadata. Please try again.")
 
 
 @client.hybrid_command(name="fastpass", description="Grant a fastpass to a user")
@@ -554,15 +449,6 @@ async def giverunnerupcredits(ctx, member: discord.Member):
 @app_commands.describe(member="Participant to grant credits to")
 async def giveparticipantcredits(ctx, member: discord.Member):
     await givecredits(ctx, member, 200)
-
-def twos_complement(hexstr, bits):
-    value = int(hexstr, 16)  # convert hexadecimal to integer
-
-    # convert from unsigned number to signed number with "bits" bits
-    if value & (1 << (bits - 1)):
-        value -= 1 << bits
-    return value
-
 
 # load_dotenv()
 token = os.environ.get("token")
