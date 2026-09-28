@@ -1,0 +1,50 @@
+{
+  "initialized": true,
+  "incidents": {
+    "website": {
+      "failed_since": null,
+      "alerted": false,
+      "last_alert_at": 0,
+      "healthy_checks": 0,
+      "reason": "",
+      "last_status": "",
+      "pause_notified": false
+    },
+    "api": {
+      "failed_since": null,
+      "alerted": false,
+      "last_alert_at": 0,
+      "healthy_checks": 0,
+      "reason": "",
+      "last_status": "",
+      "pause_notified": false
+    },
+    "video": {
+      "failed_since": null,
+      "alerted": false,
+      "last_alert_at": 0,
+      "healthy_checks": 0,
+      "reason": "",
+      "last_status": "",
+      "pause_notified": false
+    },
+    "database": {
+      "failed_since": null,
+      "alerted": false,
+      "last_alert_at": 0,
+      "healthy_checks": 0,
+      "reason": "",
+      "last_status": "",
+      "pause_notified": false
+    },
+    "images": {
+      "failed_since": null,
+      "alerted": false,
+      "last_alert_at": 0,
+      "healthy_checks": 0,
+      "reason": "",
+      "last_status": "",
+      "pause_notified": false
+    }
+  }
+}

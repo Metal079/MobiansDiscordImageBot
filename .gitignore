@@ -1,0 +1,9 @@
+*.jpg
+*.png
+*.JPG
+*.jpeg
+/nsfw
+/sfw
+/.vscode
+/__pycache__
+/venv

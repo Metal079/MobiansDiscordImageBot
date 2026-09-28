@@ -3,3 +3,7 @@ pillow
 requests
 dotenv
 pyodbc
+imagehash
+piexif
+psycopg[binary]
+aiohttp
