@@ -73,7 +73,8 @@ class MyBot(commands.Bot):
 
     # --- members (the rules and wording live in community.py) ---
 
-    def connect(self):
+    def open_database(self):
+        # Not named `connect`: that is discord.py's own method for going online, and replacing it stops the bot starting.
         return psycopg.AsyncConnection.connect(DSN)
 
     async def on_member_join(self, member):
@@ -81,21 +82,21 @@ class MyBot(commands.Bot):
             return
         channel = self.get_channel(int(WELCOME_CHANNEL_ID)) if WELCOME_CHANNEL_ID else None
         await community.on_member_join(
-            self.connect, discord_user_id=member.id, mention=member.mention,
+            self.open_database, discord_user_id=member.id, mention=member.mention,
             member_count=member.guild.member_count,
             send_welcome=channel.send if channel is not None else None, limiter=self.welcome_limiter)
 
     async def on_member_remove(self, member):
         if member.guild.id != GUILD_ID or member.bot:
             return
-        await community.on_member_remove(self.connect, member_count=member.guild.member_count)
+        await community.on_member_remove(self.open_database, member_count=member.guild.member_count)
 
     @tasks.loop(hours=6)
     async def member_count_snapshot(self):
         # A few times a day, so the server's size is on record even on days nobody joins or leaves.
         guild = self.get_guild(GUILD_ID)
         if guild is not None:
-            await community.record_member_change(self.connect, member_count=guild.member_count)
+            await community.record_member_change(self.open_database, member_count=guild.member_count)
 
     @member_count_snapshot.before_loop
     async def wait_before_first_snapshot(self):
@@ -488,7 +489,7 @@ async def giveparticipantcredits(ctx, member: discord.Member):
 async def credits_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     try:
-        reply = community.credits_message(await community.find_account(client.connect, interaction.user.id))
+        reply = community.credits_message(await community.find_account(client.open_database, interaction.user.id))
     except Exception:
         logging.exception("/credits failed")
         reply = "Couldn't look that up right now. Please try again in a minute."
@@ -498,7 +499,7 @@ async def credits_command(interaction: discord.Interaction):
 @client.tree.command(name="daily", description="Claim your Mobians daily bonus", guild=discord.Object(id=GUILD_ID))
 async def daily_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    reply = community.daily_message(await community.claim_daily(client.connect, interaction.user.id))
+    reply = community.daily_message(await community.claim_daily(client.open_database, interaction.user.id))
     await interaction.followup.send(reply, ephemeral=True)
 
 
