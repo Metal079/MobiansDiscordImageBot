@@ -479,7 +479,7 @@ async def givewinnercredits(ctx, member: discord.Member):
 async def giverunnerupcredits(ctx, member: discord.Member):
     await givecredits(ctx, member, 1000)
 
-@client.hybrid_command(name="giveparticipantcredits", description="Give 200 POTW participant credits to a user")
+@client.hybrid_command(name="giveparticipantcredits", description="Give 500 POTW participant credits to a user")
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(member="Participant to grant credits to")
 async def giveparticipantcredits(ctx, member: discord.Member):
