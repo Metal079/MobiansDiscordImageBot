@@ -482,7 +482,7 @@ async def giverunnerupcredits(ctx, member: discord.Member):
 @app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(member="Participant to grant credits to")
 async def giveparticipantcredits(ctx, member: discord.Member):
-    await givecredits(ctx, member, 200)
+    await givecredits(ctx, member, 500)
 
 @client.tree.command(name="credits", description="See your Mobians credits and daily bonus", guild=discord.Object(id=GUILD_ID))
 async def credits_command(interaction: discord.Interaction):
