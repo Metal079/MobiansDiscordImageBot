@@ -4,6 +4,8 @@ import logging
 from image_metadata import read_image_metadata, lookup_hash_metadata, metadata_embeds
 from edit_sources import MODERATION_GUILD_ID, send_edit_sources
 from generation_monitor import run_bot_monitor
+from bot_http import start_server
+import community
 import os
 import json
 from urllib.parse import urlparse
@@ -12,14 +14,13 @@ import random
 import string
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands, Attachment
 from PIL import Image
 
 # from dotenv import load_dotenv
 import psycopg
 import aiohttp
-from aiohttp import web
 
 DBHOST = os.environ.get("DBHOST")
 DBNAME = os.environ.get("DBNAME")
@@ -27,6 +28,11 @@ DBUSER = os.environ.get("DBUSER")
 DBPASS = os.environ.get("DBPASS")
 
 DSN = f"host={DBHOST} dbname='{DBNAME}' user={DBUSER} password={DBPASS}"
+
+# The Mobians server. From the environment so the bot can be tried out in a private test server.
+GUILD_ID = int(os.environ.get("GUILD_ID", "1095514548112461924"))
+# Channel for welcome messages to new members; leave unset for no welcome message.
+WELCOME_CHANNEL_ID = os.environ.get("WELCOME_CHANNEL_ID")
 
 
 class MyBot(commands.Bot):
@@ -37,42 +43,25 @@ class MyBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.session = None  # Initialize session attribute
         self.generation_monitor_task = None
+        self.http_runner = None
+        self.welcome_limiter = community.WelcomeLimiter()
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession(
             trust_env=True
         )  # Initialize the session here
-        await self.tree.sync(guild=discord.Object(id=1095514548112461924))
+        await self.tree.sync(guild=discord.Object(id=GUILD_ID))
         print(f"Successfully slash commands for {self.user} with Discord!")
         # Mobians generation availability monitoring
         self.generation_monitor_task = asyncio.create_task(run_bot_monitor(self, DSN), name="generation-availability-monitor")
+        # The role-check server the website's backend calls (bot_http.py). Started here, once:
+        # on_ready runs again after every reconnect and would try to bind the port a second time.
+        self.http_runner = await start_server(self.has_role, allowed_guild_id=GUILD_ID)
+        print("Started web server")
+        self.member_count_snapshot.start()
 
     async def on_ready(self):
         print(f"We have logged in as {self.user}")
-
-        # Start the web server
-        await self.start_server()
-        print("Started web server")
-
-    async def start_server(self):
-        app = web.Application()
-        app.router.add_post("/check_role", self.handle_role_check)
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", 6965)  # Choose your host and port
-        await site.start()
-
-    async def handle_role_check(self, request):
-        data = await request.json()
-        guild_id = data["guild_id"]
-        user_id = data["user_id"]
-        role_ids = data["role_ids"]  # Expect a list of role IDs
-
-        for role_id in role_ids:
-            if await self.has_role(guild_id, user_id, role_id):
-                return web.json_response({"has_role": True})
-
-        return web.json_response({"has_role": False})
 
     async def has_role(self, guild_id, user_id, role_id):
         guild = await self.fetch_guild(guild_id)
@@ -82,7 +71,40 @@ class MyBot(commands.Bot):
                 return int(role_id) in [role.id for role in member.roles]
         return False
 
+    # --- members (the rules and wording live in community.py) ---
+
+    def connect(self):
+        return psycopg.AsyncConnection.connect(DSN)
+
+    async def on_member_join(self, member):
+        if member.guild.id != GUILD_ID or member.bot:
+            return
+        channel = self.get_channel(int(WELCOME_CHANNEL_ID)) if WELCOME_CHANNEL_ID else None
+        await community.on_member_join(
+            self.connect, discord_user_id=member.id, mention=member.mention,
+            member_count=member.guild.member_count,
+            send_welcome=channel.send if channel is not None else None, limiter=self.welcome_limiter)
+
+    async def on_member_remove(self, member):
+        if member.guild.id != GUILD_ID or member.bot:
+            return
+        await community.on_member_remove(self.connect, member_count=member.guild.member_count)
+
+    @tasks.loop(hours=6)
+    async def member_count_snapshot(self):
+        # A few times a day, so the server's size is on record even on days nobody joins or leaves.
+        guild = self.get_guild(GUILD_ID)
+        if guild is not None:
+            await community.record_member_change(self.connect, member_count=guild.member_count)
+
+    @member_count_snapshot.before_loop
+    async def wait_before_first_snapshot(self):
+        await self.wait_until_ready()
+
     async def close(self):
+        self.member_count_snapshot.cancel()
+        if self.http_runner is not None:
+            await self.http_runner.cleanup()
         if self.generation_monitor_task is not None:
             self.generation_monitor_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -206,7 +228,7 @@ client = MyBot()
 
 
 @client.hybrid_command(name="getinfo", description="Get the metadata of an image")
-@app_commands.guilds(discord.Object(id=1095514548112461924))
+@app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(url="Get the metadata of an image")
 async def get_info(ctx, url: str = None):
     image_url = None
@@ -279,7 +301,7 @@ async def get_sources(ctx, url: str = None):
 
 
 @client.hybrid_command(name="fastpass", description="Grant a fastpass to a user")
-@app_commands.guilds(discord.Object(id=1095514548112461924))
+@app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(duration="Duration of the fastpass (e.g., 1week, 2days, 1month)")
 @app_commands.describe(duration="Grant a fastpass to a user")
 async def fastpass(ctx, duration: str, user: str = None):
@@ -393,7 +415,7 @@ async def fastpass_error(ctx, error):
 
 
 @client.hybrid_command(name="givecredits", description="Give POTW credits to a user")
-@app_commands.guilds(discord.Object(id=1095514548112461924))
+@app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(member="User to grant credits to", amount="Credits to add (positive integer)")
 async def givecredits(ctx, member: discord.Member, amount: int):
     if not _is_mod_or_admin(ctx.author):
@@ -420,7 +442,7 @@ async def givecredits(ctx, member: discord.Member, amount: int):
 
     dm_message = (
         "Thank you for participating in our POTW contest!\n"
-        f"Weâ€™ve added {amount} credits to your Mobians.ai account.\n"
+        f"We've added {amount} credits to your Mobians.ai account.\n"
         f"Your new balance is {result['new_balance']} credits."
     )
 
@@ -444,23 +466,41 @@ async def givecredits(ctx, member: discord.Member, amount: int):
 
 
 @client.hybrid_command(name="givewinnercredits", description="Give 1500 POTW winner credits to a user")
-@app_commands.guilds(discord.Object(id=1095514548112461924))
+@app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(member="Winner to grant credits to")
 async def givewinnercredits(ctx, member: discord.Member):
     await givecredits(ctx, member, 1500)
 
 
 @client.hybrid_command(name="giverunnerupcredits", description="Give 1000 POTW runner-up credits to a user")
-@app_commands.guilds(discord.Object(id=1095514548112461924))
+@app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(member="Runner-up to grant credits to")
 async def giverunnerupcredits(ctx, member: discord.Member):
     await givecredits(ctx, member, 1000)
 
 @client.hybrid_command(name="giveparticipantcredits", description="Give 200 POTW participant credits to a user")
-@app_commands.guilds(discord.Object(id=1095514548112461924))
+@app_commands.guilds(discord.Object(id=GUILD_ID))
 @app_commands.describe(member="Participant to grant credits to")
 async def giveparticipantcredits(ctx, member: discord.Member):
     await givecredits(ctx, member, 200)
+
+@client.tree.command(name="credits", description="See your Mobians credits and daily bonus", guild=discord.Object(id=GUILD_ID))
+async def credits_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        reply = community.credits_message(await community.find_account(client.connect, interaction.user.id))
+    except Exception:
+        logging.exception("/credits failed")
+        reply = "Couldn't look that up right now. Please try again in a minute."
+    await interaction.followup.send(reply, ephemeral=True)
+
+
+@client.tree.command(name="daily", description="Claim your Mobians daily bonus", guild=discord.Object(id=GUILD_ID))
+async def daily_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    reply = community.daily_message(await community.claim_daily(client.connect, interaction.user.id))
+    await interaction.followup.send(reply, ephemeral=True)
+
 
 # load_dotenv()
 token = os.environ.get("token")
