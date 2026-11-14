@@ -26,7 +26,11 @@ IMAGE_STALL_SECONDS = 600
 IMAGE_JOB_SECONDS = 900
 VIDEO_JOB_SECONDS = 1800
 LABELS = {"website": "Website", "api": "Generation API", "database": "Queue monitoring",
-          "images": "Image generation", "video": "Video generation"}
+          "images": "Image generation", "video": "Video generation", "admission_monitor": "Model memory monitoring"}
+
+
+def check_label(name):
+    return LABELS.get(name, 'Model memory: '+name.removeprefix('admission:'))
 
 
 @dataclass
@@ -35,6 +39,7 @@ class Check:
     reason: str
     # Idle traffic does not prove that a reported generation failure was fixed.
     last_success: float | None = None
+    first_failure: float | None = None
 
 
 def request_json(url):
@@ -98,6 +103,12 @@ FROM public.video_generation_queue
 WHERE is_dev_job IS NOT TRUE AND
       (status IN ('pending','processing') OR completed_at > NOW() - INTERVAL '15 minutes')
 """
+ADMISSION_SQL = """
+SELECT worker_key,model,attempts,job_id,reason,
+       EXTRACT(EPOCH FROM first_blocked_at)::float8 AS first_blocked,
+       EXTRACT(EPOCH FROM resolved_at)::float8 AS resolved
+FROM public.image_worker_admission_state
+"""
 
 
 def queue_snapshot(dsn):
@@ -111,7 +122,24 @@ def queue_snapshot(dsn):
         now = clock_row["now"]
         images = conn.execute(IMAGE_SQL).fetchall()
         videos = conn.execute(VIDEO_SQL).fetchall()
-    return now, images, videos
+        admissions = conn.execute(ADMISSION_SQL).fetchall()
+    return now, images, videos, admissions
+
+
+def admission_health(rows, now):
+    checks = {}
+    for row in rows:
+        name = f"admission:{row['worker_key']} / {row['model']}"
+        if row['resolved'] is not None:
+            checks[name] = Check('healthy', f"{row['model']} passed memory admission on {row['worker_key']}",
+                                 last_success=row['resolved'])
+        else:
+            age = max(0, int(now-row['first_blocked']))
+            checks[name] = Check('unhealthy',
+                f"{row['model']} cannot be admitted on {row['worker_key']}; blocked for {age}s, "
+                f"{row['attempts']} attempt(s). Job: {row['job_id']}. {row['reason']}",
+                first_failure=row['first_blocked'])
+    return checks
 
 
 def image_health(rows, now):
@@ -164,9 +192,11 @@ def collect_checks(dsn, api_base="https://api.mobians.ai", website_url="https://
         }
         checks = {name: futures[name].result() for name in ("website", "api", "video")}
         try:
-            now, images, videos = futures["queues"].result()
+            now, images, videos, admissions = futures["queues"].result()
             checks["database"] = Check("healthy", "Generation queues can be read")
             checks["images"] = image_health(images, now)
+            checks['admission_monitor'] = Check('healthy', 'Per-worker/model memory incidents can be read')
+            checks.update(admission_health(admissions, now))
             checks["video"] = video_queue_health(checks["video"], videos, now)
         except psycopg.Error as exc:
             checks["database"] = Check("unhealthy", f"The bot cannot inspect generation queues ({type(exc).__name__})")
@@ -206,16 +236,16 @@ class MonitorState:
             incident.healthy_checks = 0
             incident.reason = check.reason
             if incident.failed_since is None:
-                incident.failed_since = now
-                logger.error("%s: %s", LABELS[name], check.reason)
+                incident.failed_since = min(now, check.first_failure) if check.first_failure is not None else now
+                logger.error("%s: %s", check_label(name), check.reason)
             if now - incident.failed_since < OUTAGE_SECONDS:
                 return None
             if incident.alerted and now - incident.last_alert_at < REMINDER_SECONDS:
                 return None
             since = datetime.fromtimestamp(incident.failed_since, timezone.utc).isoformat(timespec="seconds")
             heading = "STILL HAVING TROUBLE" if incident.alerted else "PROBLEM DETECTED"
-            return ("outage", f"Mobians — {LABELS[name]} — {heading}\n{check.reason}\nFirst observed: {since}\nI will notify you when this check recovers.")
-        if name == "images" and incident.failed_since is not None:
+            return ("outage", f"Mobians — {check_label(name)} — {heading}\n{check.reason}\nFirst observed: {since}\nI will notify you when this check recovers.")
+        if (name == "images" or name.startswith('admission:')) and incident.failed_since is not None:
             if check.last_success is None or check.last_success < incident.failed_since:
                 incident.healthy_checks = 0
                 return None
@@ -228,10 +258,10 @@ class MonitorState:
         if check.status == "paused":
             if incident.pause_notified:
                 return None
-            return ("paused", f"Mobians — {LABELS[name]} — PLANNED PAUSE\n{check.reason}\nReminders paused. This is not a recovery confirmation.")
+            return ("paused", f"Mobians — {check_label(name)} — PLANNED PAUSE\n{check.reason}\nReminders paused. This is not a recovery confirmation.")
         elapsed = now - incident.failed_since if incident.failed_since is not None else 0
         minutes = max(0, int(elapsed / 60))
-        return ("recovery", f"Mobians — {LABELS[name]} — BACK ONLINE\n{check.reason}\nIssue lasted about {minutes} minute(s). Confirmed on two consecutive checks.")
+        return ("recovery", f"Mobians — {check_label(name)} — BACK ONLINE\n{check.reason}\nIssue lasted about {minutes} minute(s). Confirmed on two consecutive checks.")
 
     def delivered(self, name, kind, now):
         if kind == "outage":
@@ -276,7 +306,7 @@ async def run_bot_monitor(bot, dsn, *, recipient_id=143845908830748672, state_pa
             if recipient is None:
                 recipient = await bot.fetch_user(recipient_id)
             if not state.initialized:
-                summary = "\n".join(f"{LABELS[name]}: {check.status}" for name, check in checks.items())
+                summary = "\n".join(f"{check_label(name)}: {check.status}" for name, check in checks.items())
                 try:
                     await recipient.send("Mobians monitoring enabled in the image info bot. I will DM you about website/API outages, stopped or failing image jobs, and video worker problems, then confirm recovery.\n\n" + summary,
                                          allowed_mentions=discord.AllowedMentions.none())
